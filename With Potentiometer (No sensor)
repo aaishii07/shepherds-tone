@@ -1,0 +1,57 @@
+#include <Arduino.h>
+
+const int TONE_PIN = 25; 
+const int NUM_LAYERS = 6;      // More layers create a denser, smoother illusion
+const float BASE_FREQ = 40.0;  // Start lower for a longer "climb" period
+float globalPhase = 0.0;
+
+// REDUCED RISE SPEED: This increases the time period of the rise
+// 0.0005 is very slow and smooth. Increase to 0.001 if it's too slow.
+float RISE_SPEED = 0.0005;     
+
+void setup() {
+    Serial.begin(115200);
+    
+    for (int i = 0; i < NUM_LAYERS; i++) {
+        #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+            ledcAttach(TONE_PIN, 5000, 8); 
+        #else
+            ledcSetup(i, 5000, 8); 
+            ledcAttachPin(TONE_PIN, i);
+        #endif
+    }
+}
+
+void loop() {
+    globalPhase += RISE_SPEED;
+    if (globalPhase >= 1.0) globalPhase -= 1.0;
+
+    for (int i = 0; i < NUM_LAYERS; i++) {
+        float layerPos = (float)i + globalPhase;
+        
+        // Logarithmic frequency climb
+        float freq = BASE_FREQ * pow(2.0, layerPos);
+        
+        // ENHANCED SMOOTHING: 
+        // We use a normalized position across the total range
+        float relPos = layerPos / (float)NUM_LAYERS; 
+        
+        // Hanning Window: Forces volume to EXACTLY 0 at top and bottom
+        // This eliminates the "breaking" sound during the reset.
+        float volumeTarget = 0.5 * (1.0 - cos(2.0 * PI * relPos));
+        
+        // Keep volume low to prevent "clipping" noise on Grove speakers
+        int duty = (int)(volumeTarget * (150.0 / NUM_LAYERS));
+
+        // Use a small buffer to ensure we don't hit the "restart" limit of the timer
+        if (freq > 30 && freq < 12000) {
+            ledcWriteTone(i, (uint32_t)freq);
+            ledcWrite(i, duty);
+        } else {
+            ledcWrite(i, 0); // Silence for the jump
+        }
+    }
+
+    // Small delay to allow the CPU to process the math without stuttering
+    delay(30); 
+}
