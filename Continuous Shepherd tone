@@ -1,0 +1,74 @@
+#include <Arduino.h>
+#include <math.h>
+
+#define SPEAKER_PIN 25
+#define TRIG_PIN 18
+#define ECHO_PIN 19
+
+#define NUM_LAYERS 6
+#define BASE_FREQ 40.0
+
+float globalPhase = 0.0;
+
+// ---------- Distance Measurement ----------
+long getDistanceCM() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000); // timeout
+  if (duration == 0) return 400;                  // out of range
+
+  return duration * 0.034 / 2;
+}
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  for (int ch = 0; ch < NUM_LAYERS; ch++) {
+    ledcSetup(ch, 20000, 8);
+    ledcAttachPin(SPEAKER_PIN, ch);
+  }
+}
+
+void loop() {
+  long distance = getDistanceCM();
+
+  // ---------- Map distance → urgency ----------
+  // Near → faster rise (more frequent sound)
+  // Far  → slower rise (less frequent sound)
+  float riseSpeed;
+
+  if (distance < 40)        riseSpeed = 0.010;  // very close
+  else if (distance < 80)   riseSpeed = 0.006;
+  else if (distance < 150)  riseSpeed = 0.003;
+  else                      riseSpeed = 0.001;  // far
+
+  globalPhase += riseSpeed;
+
+  // ---------- Shepard Tone ----------
+  for (int i = 0; i < NUM_LAYERS; i++) {
+    float layerPhase = globalPhase + i;
+    float octavePos  = fmod(layerPhase, NUM_LAYERS);
+
+    float freq = BASE_FREQ * pow(2.0, octavePos);
+
+    // Gaussian envelope (prevents reset sound)
+    float x = (octavePos - (NUM_LAYERS / 2.0)) / (NUM_LAYERS / 2.0);
+    float volume = exp(-4.0 * x * x);
+
+    int duty = volume * (255.0 / NUM_LAYERS);
+
+    if (freq < 18000) {
+      ledcWriteTone(i, freq);
+      ledcWrite(i, duty);
+    } else {
+      ledcWrite(i, 0);
+    }
+  }
+
+  delay(10);
+}
