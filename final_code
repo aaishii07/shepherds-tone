@@ -1,0 +1,100 @@
+#include <Arduino.h>
+
+// ------------------- PINS -------------------
+const int TRIG_PIN = 5;    // Ultrasonic Trig
+const int ECHO_PIN = 18;   // Ultrasonic Echo
+const int TONE_PIN = 25;   // Grove Speaker
+
+// ------------------- AUDIO CONFIG -------------------
+const int NUM_LAYERS = 6;
+const float BASE_FREQ = 40.0;
+float globalPhase = 0.0;
+
+// ------------------- DYNAMIC VARIABLES -------------------
+float RISE_SPEED = 0.0001; 
+unsigned long lastSensorTime = 0;
+
+// ------------------- HELPER FUNCTIONS -------------------
+float getDistance() {
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+    
+    // Timeout 15ms (~2.5m)
+    long duration = pulseIn(ECHO_PIN, HIGH, 15000); 
+    if (duration == 0) return 150.0; // Assume far if error
+    return duration * 0.034 / 2;
+}
+
+void setup() {
+    Serial.begin(115200);
+    
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
+
+    // Audio Setup
+    for (int i = 0; i < NUM_LAYERS; i++) {
+        #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+            ledcAttach(TONE_PIN, 5000, 8); 
+        #else
+            ledcSetup(i, 5000, 8); 
+            ledcAttachPin(TONE_PIN, i);
+        #endif
+    }
+    
+    Serial.println("--- SHEPARD SIREN STARTED ---");
+    Serial.println("Move object closer to see distance change...");
+}
+
+void loop() {
+    // ------------------- 1. SENSOR LOGIC -------------------
+    if (millis() - lastSensorTime > 60) {
+        lastSensorTime = millis();
+        
+        float dist = getDistance();
+        
+        // Clamp distance: 5cm (Danger) to 150cm (Safe)
+        float d_clamped = constrain(dist, 5.0, 150.0);
+        
+        // Calculate Urgency (0.0 = Far, 1.0 = Close)
+        float urgency = 1.0 - (d_clamped - 5.0) / 145.0; 
+        
+        // Extreme "Power of 4" Curve
+        float minSpeed = 0.00005; 
+        float maxSpeed = 0.04;    
+        
+        RISE_SPEED = minSpeed + (maxSpeed * pow(urgency, 4));
+
+        // --- DISPLAY DISTANCE IN TERMINAL ---
+        Serial.print("Distance: "); 
+        Serial.print(dist); 
+        Serial.print(" cm  |  Rise Speed: "); 
+        Serial.println(RISE_SPEED, 6); 
+    }
+
+    // ------------------- 2. AUDIO LOGIC -------------------
+    globalPhase += RISE_SPEED;
+    if (globalPhase >= 1.0) globalPhase -= 1.0;
+
+    for (int i = 0; i < NUM_LAYERS; i++) {
+        float layerPos = (float)i + globalPhase;
+        float freq = BASE_FREQ * pow(2.0, layerPos);
+        float relPos = layerPos / (float)NUM_LAYERS; 
+        
+        // Hanning Window
+        float volumeTarget = 0.5 * (1.0 - cos(2.0 * PI * relPos));
+        
+        int duty = (int)(volumeTarget * (150.0 / NUM_LAYERS));
+
+        if (freq > 30 && freq < 12000) {
+            ledcWriteTone(i, (uint32_t)freq);
+            ledcWrite(i, duty);
+        } else {
+            ledcWrite(i, 0); 
+        }
+    }
+
+    delay(30); 
+}
